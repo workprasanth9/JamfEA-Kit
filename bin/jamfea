@@ -1,0 +1,243 @@
+#!/bin/bash
+# jamfea: list, run, validate, and export Jamf Pro Extension Attributes.
+# https://github.com/workprasanth9/JamfEA-Kit
+# MIT License, Copyright (c) 2026 Prasanth Yethirajula
+
+set -u
+
+JAMFEA_VERSION="1.0.0"
+REPO_URL="https://github.com/workprasanth9/JamfEA-Kit"
+
+resolve_self() {
+  local src="$0" dir
+  while [ -L "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+find_ea_dir() {
+  local self
+  if [ -n "${JAMFEA_EA_DIR:-}" ]; then echo "$JAMFEA_EA_DIR"; return; fi
+  self="$(resolve_self)"
+  for d in "$self/../eas" "$self/../share/jamfea-kit/eas" "/usr/local/share/jamfea-kit/eas"; do
+    if [ -d "$d" ]; then (cd "$d" && pwd); return; fi
+  done
+  echo ""
+}
+
+EA_DIR="$(find_ea_dir)"
+
+die() { echo "jamfea: $*" >&2; exit 1; }
+
+meta() {
+  # meta <file> <key>
+  /usr/bin/awk -v k="# EA-$2:" 'index($0, k) == 1 { sub(k " *", ""); print; exit }' "$1"
+}
+
+ea_files() {
+  [ -n "$EA_DIR" ] || die "could not find the eas folder. Set JAMFEA_EA_DIR."
+  local f
+  for f in "$EA_DIR"/*.sh; do [ -f "$f" ] && echo "$f"; done
+}
+
+resolve_ea() {
+  local id="$1"
+  if [ -f "$id" ]; then echo "$id"; return; fi
+  id="${id%.sh}"
+  [ -f "$EA_DIR/$id.sh" ] || die "no EA named '$1'. Run 'jamfea list'."
+  echo "$EA_DIR/$id.sh"
+}
+
+usage() {
+  cat <<USAGE
+jamfea $JAMFEA_VERSION: a toolkit for Jamf Pro Extension Attributes
+
+Usage:
+  jamfea list                      List every EA with its data type and name
+  jamfea info <id>                 Show metadata for one EA
+  jamfea run <id>... | --all       Run EAs and print their results
+  jamfea validate [<id>...]        Check syntax, metadata, and output format
+  jamfea export [--format xml|json] [--out DIR]
+                                   Export EAs for Jamf Pro (xml: Classic API,
+                                   json: Jamf Pro API). Prints to stdout
+                                   without --out.
+  jamfea path                      Print the folder that holds the EA scripts
+  jamfea version                   Print the version
+
+EAs live in: ${EA_DIR:-not found}
+Project: $REPO_URL
+USAGE
+}
+
+cmd_list() {
+  local f
+  printf '%-24s %-8s %s\n' "ID" "TYPE" "NAME"
+  while read -r f; do
+    printf '%-24s %-8s %s\n' "$(basename "$f" .sh)" "$(meta "$f" DataType)" "$(meta "$f" Name)"
+  done < <(ea_files)
+}
+
+cmd_info() {
+  [ $# -ge 1 ] || die "usage: jamfea info <id>"
+  local f; f="$(resolve_ea "$1")"
+  echo "ID:          $(basename "$f" .sh)"
+  echo "Name:        $(meta "$f" Name)"
+  echo "Data type:   $(meta "$f" DataType)"
+  echo "Description: $(meta "$f" Description)"
+  echo "Script:      $f"
+}
+
+run_one() {
+  local f="$1" out
+  out="$(/bin/bash "$f" 2>/dev/null)"
+  printf '%-24s %s\n' "$(basename "$f" .sh)" "$out"
+}
+
+cmd_run() {
+  [ $# -ge 1 ] || die "usage: jamfea run <id>... | --all"
+  local f
+  if [ "$1" = "--all" ]; then
+    while read -r f; do run_one "$f"; done < <(ea_files)
+  else
+    for id in "$@"; do f="$(resolve_ea "$id")" || exit 1; run_one "$f"; done
+  fi
+}
+
+validate_one() {
+  local f="$1" id name dtype desc out value errs=0
+  id="$(basename "$f" .sh)"
+  name="$(meta "$f" Name)"; dtype="$(meta "$f" DataType)"; desc="$(meta "$f" Description)"
+  fail() { echo "  FAIL $id: $*"; errs=$((errs + 1)); }
+  [ "$(head -n 1 "$f")" = "#!/bin/bash" ] || fail "first line must be #!/bin/bash"
+  [ -n "$name" ] || fail "missing # EA-Name"
+  [ -n "$desc" ] || fail "missing # EA-Description"
+  case "$dtype" in String|Integer|Date) ;; *) fail "EA-DataType must be String, Integer, or Date (got '$dtype')" ;; esac
+  /bin/bash -n "$f" 2>/dev/null || fail "bash syntax error"
+  if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck -s bash "$f" >/dev/null 2>&1 || fail "shellcheck reported issues (run: shellcheck $f)"
+  fi
+  out="$(/bin/bash "$f" 2>/dev/null)"
+  if [ "$(printf '%s\n' "$out" | grep -c '<result>')" -ne 1 ] || ! printf '%s' "$out" | grep -Eq '^<result>.*</result>$'; then
+    fail "output must be exactly one <result>...</result> line (got '$out')"
+  else
+    value="${out#<result>}"; value="${value%</result>}"
+    if [ -n "$value" ]; then
+      case "$dtype" in
+        Integer) printf '%s' "$value" | grep -Eq '^-?[0-9]+$' || fail "Integer EA returned '$value'" ;;
+        Date) printf '%s' "$value" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$' || fail "Date EA returned '$value'" ;;
+      esac
+    fi
+  fi
+  if [ "$errs" -eq 0 ]; then echo "  ok   $id -> $out"; return 0; fi
+  return 1
+}
+
+cmd_validate() {
+  local f failed=0 total=0
+  local files=()
+  if [ $# -ge 1 ]; then
+    for id in "$@"; do files+=("$(resolve_ea "$id")") || exit 1; done
+  else
+    while read -r f; do files+=("$f"); done < <(ea_files)
+  fi
+  echo "Validating ${#files[@]} EA(s)"
+  for f in "${files[@]}"; do
+    total=$((total + 1))
+    validate_one "$f" || failed=$((failed + 1))
+  done
+  echo "$((total - failed))/$total passed"
+  [ "$failed" -eq 0 ]
+}
+
+xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
+
+json_escape() {
+  # Reads stdin, prints a JSON string literal (with quotes).
+  awk 'BEGIN { ORS = ""; print "\"" }
+       { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r");
+         if (NR > 1) print "\\n"; print }
+       END { print "\\n\"" }'
+}
+
+export_xml_one() {
+  local f="$1" dtype
+  dtype="$(meta "$f" DataType)"
+  cat <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<computer_extension_attribute>
+  <name>$(meta "$f" Name | xml_escape)</name>
+  <enabled>true</enabled>
+  <description>$(meta "$f" Description | xml_escape)</description>
+  <data_type>$dtype</data_type>
+  <input_type>
+    <type>script</type>
+    <platform>Mac</platform>
+    <script>$(xml_escape < "$f")</script>
+  </input_type>
+  <inventory_display>Extension Attributes</inventory_display>
+</computer_extension_attribute>
+XML
+}
+
+export_json_one() {
+  local f="$1" dtype
+  dtype="$(meta "$f" DataType | tr '[:lower:]' '[:upper:]')"
+  cat <<JSON
+{
+  "name": $(meta "$f" Name | tr -d '\n' | json_escape | sed 's/\\n"$/"/'),
+  "description": $(meta "$f" Description | tr -d '\n' | json_escape | sed 's/\\n"$/"/'),
+  "dataType": "$dtype",
+  "enabled": true,
+  "inventoryDisplayType": "EXTENSION_ATTRIBUTES",
+  "inputType": "SCRIPT",
+  "scriptContents": $(json_escape < "$f")
+}
+JSON
+}
+
+cmd_export() {
+  local format="xml" outdir="" f id first=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --format) format="${2:-}"; shift 2 ;;
+      --format=*) format="${1#*=}"; shift ;;
+      --out) outdir="${2:-}"; shift 2 ;;
+      --out=*) outdir="${1#*=}"; shift ;;
+      *) die "unknown export option '$1'" ;;
+    esac
+  done
+  case "$format" in xml|json) ;; *) die "--format must be xml or json" ;; esac
+  if [ -n "$outdir" ]; then
+    mkdir -p "$outdir" || die "cannot create $outdir"
+    while read -r f; do
+      id="$(basename "$f" .sh)"
+      "export_${format}_one" "$f" > "$outdir/$id.$format"
+      echo "wrote $outdir/$id.$format"
+    done < <(ea_files)
+  elif [ "$format" = "json" ]; then
+    echo "["
+    while read -r f; do
+      [ $first -eq 1 ] || echo ","
+      first=0
+      export_json_one "$f"
+    done < <(ea_files)
+    echo "]"
+  else
+    while read -r f; do export_xml_one "$f"; done < <(ea_files)
+  fi
+}
+
+case "${1:-help}" in
+  list|ls) shift; cmd_list "$@" ;;
+  info) shift; cmd_info "$@" ;;
+  run) shift; cmd_run "$@" ;;
+  validate|check) shift; cmd_validate "$@" ;;
+  export) shift; cmd_export "$@" ;;
+  path) echo "$EA_DIR" ;;
+  version|--version|-v) echo "jamfea $JAMFEA_VERSION" ;;
+  help|--help|-h) usage ;;
+  *) echo "jamfea: unknown command '$1'" >&2; usage >&2; exit 1 ;;
+esac

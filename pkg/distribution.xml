@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>JamfEA-Kit @VERSION@</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <license file="LICENSE.txt"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <domains enable_localSystem="true"/>
+    <choices-outline>
+        <line choice="default"/>
+    </choices-outline>
+    <choice id="default" title="JamfEA-Kit">
+        <pkg-ref id="io.github.workprasanth9.jamfea-kit"/>
+    </choice>
+    <pkg-ref id="io.github.workprasanth9.jamfea-kit" version="@VERSION@">component.pkg</pkg-ref>
+</installer-gui-script>

@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: brew install shellcheck
+      - name: Shellcheck
+        run: shellcheck -s bash bin/jamfea eas/*.sh scripts/*.sh
+      - name: No em dashes
+        run: |
+          dash=$(printf '\xe2\x80\x94')
+          if grep -rn --exclude-dir=.git "$dash" .; then echo "Em dash found"; exit 1; fi
+      - name: Validate EAs
+        run: bin/jamfea validate
+      - name: Export smoke test
+        run: |
+          bin/jamfea export --format json > all.json
+          python3 -m json.tool all.json > /dev/null
+          bin/jamfea export --format xml --out out/xml
+          for f in out/xml/*.xml; do xmllint --noout "$f"; done
+
+  pkg:
+    runs-on: macos-15
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pkg
+        run: scripts/build-pkg.sh
+      - name: Inspect pkg
+        run: |
+          pkgutil --payload-files dist/*.pkg | head -n 40
+          shasum -a 256 dist/*.pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JamfEA-Kit-pkg
+          path: dist/*.pkg
