@@ -5,39 +5,39 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   lint:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install shellcheck
-        run: brew install shellcheck
       - name: Shellcheck
         run: shellcheck -s bash bin/jamfea eas/*.sh scripts/*.sh
       - name: No em dashes
         run: |
           dash=$(printf '\xe2\x80\x94')
           if grep -rn --exclude-dir=.git "$dash" .; then echo "Em dash found"; exit 1; fi
-      - name: Validate EAs
-        run: bin/jamfea validate
       - name: Export smoke test
         run: |
+          sudo apt-get install -y libxml2-utils >/dev/null
           bin/jamfea export --format json > all.json
           python3 -m json.tool all.json > /dev/null
           bin/jamfea export --format xml --out out/xml
           for f in out/xml/*.xml; do xmllint --noout "$f"; done
 
-  pkg:
+  macos:
     runs-on: macos-15
     needs: lint
     steps:
       - uses: actions/checkout@v4
+      - name: Validate EAs on macOS
+        run: bin/jamfea validate
       - name: Build pkg
         run: scripts/build-pkg.sh
       - name: Inspect pkg
         run: |
-          pkgutil --payload-files dist/*.pkg | head -n 40
+          pkgutil --payload-files dist/*.pkg
           shasum -a 256 dist/*.pkg
       - uses: actions/upload-artifact@v4
         with:
