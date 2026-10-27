@@ -11,7 +11,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Shellcheck
         run: shellcheck -s bash bin/jamfea eas/*.sh scripts/*.sh
       - name: No em dashes
@@ -27,10 +27,10 @@ jobs:
           for f in out/xml/*.xml; do xmllint --noout "$f"; done
 
   macos:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate EAs on macOS
         run: bin/jamfea validate
       - name: Build pkg
@@ -39,7 +39,7 @@ jobs:
         run: |
           pkgutil --payload-files dist/*.pkg
           shasum -a 256 dist/*.pkg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: JamfEA-Kit-pkg
           path: dist/*.pkg
