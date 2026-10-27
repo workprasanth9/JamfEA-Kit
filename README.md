@@ -12,8 +12,12 @@ Every EA is a standalone bash script that prints a single `<result>...</result>`
 **Homebrew**
 
 ```bash
-brew install workprasanth9/tap/jamfea-kit
+brew tap workprasanth9/tap
+brew trust workprasanth9/tap
+brew install jamfea-kit
 ```
+
+Homebrew 7 refuses to load formulae from a third party tap until you trust it, which is what `brew trust` does. Installing by the full name, `brew install workprasanth9/tap/jamfea-kit`, also works without that step, because naming the tap trusts that one formula.
 
 **Installer package**
 
